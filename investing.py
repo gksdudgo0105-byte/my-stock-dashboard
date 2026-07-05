@@ -28,14 +28,38 @@ def calc_rsi(df, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
+def calc_bollinger(df, window=20, k=2):
+    mid = df['Close'].rolling(window=window).mean()
+    std = df['Close'].rolling(window=window).std()
+    upper = mid + k * std
+    lower = mid - k * std
+    return mid, upper, lower
+
+def calc_ichimoku(df):
+    # 일목균형표(一目均衡表): 전환선/기준선/선행스팬1,2/후행스팬
+    high, low, close = df['High'], df['Low'], df['Close']
+    tenkan = (high.rolling(9).max() + low.rolling(9).min()) / 2      # 전환선
+    kijun = (high.rolling(26).max() + low.rolling(26).min()) / 2     # 기준선
+    span_a = ((tenkan + kijun) / 2).shift(26)                        # 선행스팬1
+    span_b = ((high.rolling(52).max() + low.rolling(52).min()) / 2).shift(26)  # 선행스팬2
+    chikou = close.shift(-26)                                        # 후행스팬
+    return tenkan, kijun, span_a, span_b, chikou
+
 # ----------------------------------------------------
 # 2. 데이터 로드 및 표시용 헬퍼
 # ----------------------------------------------------
+# 봉 주기(일/주/월) 별 조회 기간·간격 설정
+TIMEFRAMES = {
+    "일봉": ("1y", "1d"),
+    "주봉": ("5y", "1wk"),
+    "월봉": ("max", "1mo"),
+}
+
 @st.cache_data(ttl=300)
-def load_data(ticker):
+def load_data(ticker, period="1y", interval="1d"):
     # yfinance의 최신 버전 호환성 문제(MultiIndex)를 피하기 위해 Ticker.history()를 사용합니다.
     stock = yf.Ticker(ticker)
-    data = stock.history(period="1y")
+    data = stock.history(period=period, interval=interval)
     return data
 
 def build_sparkline(series, color):
@@ -178,6 +202,8 @@ def set_sort(key):
 # 4. 사이드바: 종목 추가 + 화면별 옵션
 # ----------------------------------------------------
 show_sma20 = show_sma60 = show_sma120 = show_rsi = show_macd = False
+show_bb = show_ichimoku = False
+timeframe = "일봉"
 
 with st.sidebar:
     st.header("🔍 설정 패널")
@@ -196,12 +222,17 @@ with st.sidebar:
     st.divider()
 
     if st.session_state.view == 'detail':
-        st.button("← 종목 리스트로 돌아가기", on_click=show_list, width='stretch')
+        st.button("← 목록으로 돌아가기", on_click=show_list, width='stretch')
+        st.divider()
+        st.subheader("🕒 봉 주기")
+        timeframe = st.radio("봉 주기", list(TIMEFRAMES.keys()), horizontal=True, label_visibility="collapsed")
         st.divider()
         st.subheader("📊 차트 옵션")
-        show_sma20 = st.checkbox("20일 이동평균선", value=True)
+        show_sma20 = st.checkbox("20일 이동평균선", value=False)
         show_sma60 = st.checkbox("60일 이동평균선", value=False)
         show_sma120 = st.checkbox("120일 이동평균선", value=False)
+        show_bb = st.checkbox("볼린저밴드 (20, 2σ)", value=True)
+        show_ichimoku = st.checkbox("일목구름 (일목균형표)", value=True)
         show_rsi = st.checkbox("RSI (상대강도지수)", value=True)
         show_macd = st.checkbox("MACD", value=True)
     elif st.session_state.view == 'list':
@@ -236,6 +267,8 @@ def render_market():
                 st.metric(label=ticker, value=f"{last_close:,.2f}", delta=f"{change_pct:+.2f}%")
                 spark = build_sparkline(data['Close'].tail(30), color)
                 st.plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"idx_spark_{ticker}")
+                st.button("차트 보기 →", key=f"idx_open_{ticker}", on_click=open_detail,
+                          args=(name, ticker, ""), width='stretch')
 
     st.divider()
     st.button("📋 관심종목 리스트 보기", on_click=show_list, width='stretch')
@@ -321,12 +354,14 @@ def render_list():
 # ----------------------------------------------------
 # 5-C. 상세 화면: 캔들스틱 + 보조지표
 # ----------------------------------------------------
-def render_detail(show_sma20, show_sma60, show_sma120, show_rsi, show_macd):
+def render_detail(opts):
     name = st.session_state.active_name
     ticker = st.session_state.active_ticker
-    st.write(f"### **{name} ({ticker})** 차트 분석")
+    timeframe = opts['timeframe']
+    st.write(f"### **{name} ({ticker})** 차트 분석  ·  {timeframe}")
 
-    df = load_data(ticker)
+    period, interval = TIMEFRAMES[timeframe]
+    df = load_data(ticker, period=period, interval=interval)
 
     if df.empty:
         st.error("데이터를 불러오지 못했습니다. 올바른 티커인지 확인해 주세요.")
@@ -337,11 +372,14 @@ def render_detail(show_sma20, show_sma60, show_sma120, show_rsi, show_macd):
     df['SMA120'] = calc_sma(df, 120)
     df['MACD'], df['MACD_Signal'], df['MACD_Hist'] = calc_macd(df)
     df['RSI'] = calc_rsi(df)
+    df['BB_MID'], df['BB_UP'], df['BB_LOW'] = calc_bollinger(df)
+    df['ICH_TENKAN'], df['ICH_KIJUN'], df['ICH_A'], df['ICH_B'], df['ICH_CHIKOU'] = calc_ichimoku(df)
 
-    # 최근 6개월 데이터만 잘라서 차트에 표시 (너무 길면 캔들이 안 보임)
+    # 최근 120개 봉만 잘라서 표시 (너무 길면 캔들이 안 보임)
     df_chart = df.tail(120)
+    x = df_chart.index
 
-    # 보조지표 선택 여부에 따라 차트의 층(Row) 개수 계산
+    show_rsi, show_macd = opts['rsi'], opts['macd']
     rows = 1
     if show_rsi: rows += 1
     if show_macd: rows += 1
@@ -352,37 +390,75 @@ def render_detail(show_sma20, show_sma60, show_sma120, show_rsi, show_macd):
 
     fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=row_heights)
 
-    fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+    # 일목구름: 캔들 뒤에 먼저 그림 (선행스팬1 >= 선행스팬2 → 초록 구름, 아니면 빨강 구름)
+    if opts['ichimoku']:
+        span_a, span_b = df_chart['ICH_A'], df_chart['ICH_B']
+        # 초록 구름
+        fig.add_trace(go.Scatter(x=x, y=span_b, line=dict(width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=span_a.where(span_a >= span_b), fill='tonexty',
+                                 fillcolor='rgba(38,166,154,0.18)', line=dict(width=0),
+                                 showlegend=False, hoverinfo='skip'), row=1, col=1)
+        # 빨강 구름
+        fig.add_trace(go.Scatter(x=x, y=span_b, line=dict(width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=span_a.where(span_a < span_b), fill='tonexty',
+                                 fillcolor='rgba(239,83,80,0.18)', line=dict(width=0),
+                                 showlegend=False, hoverinfo='skip'), row=1, col=1)
+        # 구름 경계선
+        fig.add_trace(go.Scatter(x=x, y=span_a, line=dict(color='rgba(38,166,154,0.7)', width=1), name='선행스팬1'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=span_b, line=dict(color='rgba(239,83,80,0.7)', width=1), name='선행스팬2'), row=1, col=1)
+
+    # 캔들스틱
+    fig.add_trace(go.Candlestick(x=x, open=df_chart['Open'], high=df_chart['High'],
                                  low=df_chart['Low'], close=df_chart['Close'], name='Candle'), row=1, col=1)
 
-    if show_sma20:
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA20'], line=dict(color='orange', width=1.5), name='SMA 20'), row=1, col=1)
-    if show_sma60:
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA60'], line=dict(color='blue', width=1.5), name='SMA 60'), row=1, col=1)
-    if show_sma120:
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA120'], line=dict(color='purple', width=1.5), name='SMA 120'), row=1, col=1)
+    # 일목균형표 전환선/기준선/후행스팬
+    if opts['ichimoku']:
+        fig.add_trace(go.Scatter(x=x, y=df_chart['ICH_TENKAN'], line=dict(color='#2962FF', width=1.2), name='전환선'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=df_chart['ICH_KIJUN'], line=dict(color='#B71C1C', width=1.2), name='기준선'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=df_chart['ICH_CHIKOU'], line=dict(color='#9E9E9E', width=1, dash='dot'), name='후행스팬'), row=1, col=1)
+
+    # 볼린저밴드
+    if opts['bb']:
+        fig.add_trace(go.Scatter(x=x, y=df_chart['BB_UP'], line=dict(color='rgba(120,120,255,0.6)', width=1), name='BB 상단'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=df_chart['BB_LOW'], fill='tonexty', fillcolor='rgba(120,120,255,0.10)',
+                                 line=dict(color='rgba(120,120,255,0.6)', width=1), name='BB 하단'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=df_chart['BB_MID'], line=dict(color='rgba(120,120,255,0.9)', width=1, dash='dash'), name='BB 중심'), row=1, col=1)
+
+    # 이동평균선
+    if opts['sma20']:
+        fig.add_trace(go.Scatter(x=x, y=df_chart['SMA20'], line=dict(color='orange', width=1.5), name='SMA 20'), row=1, col=1)
+    if opts['sma60']:
+        fig.add_trace(go.Scatter(x=x, y=df_chart['SMA60'], line=dict(color='blue', width=1.5), name='SMA 60'), row=1, col=1)
+    if opts['sma120']:
+        fig.add_trace(go.Scatter(x=x, y=df_chart['SMA120'], line=dict(color='purple', width=1.5), name='SMA 120'), row=1, col=1)
 
     current_row = 2
     if show_rsi:
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RSI'], line=dict(color='purple', width=1.5), name='RSI'), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=x, y=df_chart['RSI'], line=dict(color='purple', width=1.5), name='RSI'), row=current_row, col=1)
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=current_row, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=current_row, col=1)
         current_row += 1
 
     if show_macd:
         colors = ['green' if val >= 0 else 'red' for val in df_chart['MACD_Hist']]
-        fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['MACD_Hist'], marker_color=colors, name='MACD Hist'), row=current_row, col=1)
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD'], line=dict(color='blue', width=1.5), name='MACD Line'), row=current_row, col=1)
-        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD_Signal'], line=dict(color='orange', width=1.5), name='Signal Line'), row=current_row, col=1)
+        fig.add_trace(go.Bar(x=x, y=df_chart['MACD_Hist'], marker_color=colors, name='MACD Hist'), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=x, y=df_chart['MACD'], line=dict(color='blue', width=1.5), name='MACD Line'), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=x, y=df_chart['MACD_Signal'], line=dict(color='orange', width=1.5), name='Signal Line'), row=current_row, col=1)
 
-    fig.update_layout(height=800, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=30, b=0))
+    fig.update_layout(height=800, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=30, b=0),
+                      legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0))
     st.plotly_chart(fig, width='stretch')
 
 # ----------------------------------------------------
 # 6. 라우팅
 # ----------------------------------------------------
 if st.session_state.view == 'detail' and st.session_state.active_ticker:
-    render_detail(show_sma20, show_sma60, show_sma120, show_rsi, show_macd)
+    render_detail({
+        'timeframe': timeframe,
+        'sma20': show_sma20, 'sma60': show_sma60, 'sma120': show_sma120,
+        'bb': show_bb, 'ichimoku': show_ichimoku,
+        'rsi': show_rsi, 'macd': show_macd,
+    })
 elif st.session_state.view == 'list':
     render_list()
 else:
