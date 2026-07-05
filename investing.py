@@ -29,7 +29,7 @@ def calc_rsi(df, period=14):
     return rsi
 
 # ----------------------------------------------------
-# 2. 데이터 로드 (종목별로 캐싱, 5분마다 갱신)
+# 2. 데이터 로드 및 표시용 헬퍼
 # ----------------------------------------------------
 @st.cache_data(ttl=300)
 def load_data(ticker):
@@ -37,6 +37,41 @@ def load_data(ticker):
     stock = yf.Ticker(ticker)
     data = stock.history(period="1y")
     return data
+
+def build_sparkline(series, color):
+    fig = go.Figure(go.Scatter(y=series.values, mode='lines', line=dict(color=color, width=1.5)))
+    fig.update_layout(height=50, margin=dict(l=0, r=0, t=0, b=0),
+                       xaxis=dict(visible=False), yaxis=dict(visible=False),
+                       showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+    return fig
+
+def format_volume(v):
+    if v is None or pd.isna(v):
+        return "-"
+    v = float(v)
+    if v >= 1_000_000_000: return f"{v/1_000_000_000:.2f}B"
+    if v >= 1_000_000: return f"{v/1_000_000:.2f}M"
+    if v >= 1_000: return f"{v/1_000:.2f}K"
+    return f"{v:.0f}"
+
+# 메인 화면에 표시할 주요 지수
+INDEXES = [
+    ("나스닥", "^IXIC"),
+    ("S&P 500", "^GSPC"),
+    ("다우존스", "^DJI"),
+    ("비트코인", "BTC-USD"),
+]
+
+# 관심종목 리스트의 정렬 가능한 컬럼 (표시 라벨, 정렬 키, 컬럼 너비)
+LIST_COLUMNS = [
+    ("종목", "ticker", 2.0),
+    ("이름", "name", 2.6),
+    ("현재가", "price", 1.4),
+    ("등락률", "change", 1.4),
+    ("거래량", "volume", 1.6),
+    ("최근 추이", None, 1.8),
+    ("", None, 0.7),
+]
 
 # ----------------------------------------------------
 # 3. 기본 UI 및 상태(세션) 초기화
@@ -78,27 +113,39 @@ if 'tickers' not in st.session_state:
         "록히드마틴 (Lockheed Martin)": "LMT",
     }
 if 'view' not in st.session_state:
-    st.session_state.view = 'home'          # 'home' or 'detail'
+    st.session_state.view = 'home'          # 'home'(주요 지수) / 'list'(관심종목) / 'detail'(차트)
 if 'active_name' not in st.session_state:
     st.session_state.active_name = None
 if 'active_ticker' not in st.session_state:
     st.session_state.active_ticker = None
+if 'sort_by' not in st.session_state:
+    st.session_state.sort_by = None          # None이면 추가한 순서 그대로
+if 'sort_dir' not in st.session_state:
+    st.session_state.sort_dir = 'desc'
+
+def show_market():
+    st.session_state.view = 'home'
+
+def show_list():
+    st.session_state.view = 'list'
 
 def open_detail(name, ticker):
     st.session_state.view = 'detail'
     st.session_state.active_name = name
     st.session_state.active_ticker = ticker
 
-def back_to_home():
-    st.session_state.view = 'home'
-
 def remove_ticker(name):
     st.session_state.tickers.pop(name, None)
-    if st.session_state.active_name == name:
-        st.session_state.view = 'home'
+
+def set_sort(key):
+    if st.session_state.sort_by == key:
+        st.session_state.sort_dir = 'asc' if st.session_state.sort_dir == 'desc' else 'desc'
+    else:
+        st.session_state.sort_by = key
+        st.session_state.sort_dir = 'desc'
 
 # ----------------------------------------------------
-# 4. 사이드바: 종목 추가 + (상세 화면일 때) 차트 옵션
+# 4. 사이드바: 종목 추가 + 화면별 옵션
 # ----------------------------------------------------
 show_sma20 = show_sma60 = show_sma120 = show_rsi = show_macd = False
 
@@ -114,7 +161,7 @@ with st.sidebar:
     st.divider()
 
     if st.session_state.view == 'detail':
-        st.button("← 종목 리스트로 돌아가기", on_click=back_to_home, width='stretch')
+        st.button("← 종목 리스트로 돌아가기", on_click=show_list, width='stretch')
         st.divider()
         st.subheader("📊 차트 옵션")
         show_sma20 = st.checkbox("20일 이동평균선", value=True)
@@ -122,60 +169,112 @@ with st.sidebar:
         show_sma120 = st.checkbox("120일 이동평균선", value=False)
         show_rsi = st.checkbox("RSI (상대강도지수)", value=True)
         show_macd = st.checkbox("MACD", value=True)
+    elif st.session_state.view == 'list':
+        st.button("← 메인 화면으로", on_click=show_market, width='stretch')
+        st.caption("열 제목을 클릭하면 오름차순/내림차순 정렬이 전환됩니다.")
     else:
-        st.caption("아래 관심종목 리스트에서 종목을 클릭하면 상세 차트로 이동합니다.")
+        st.caption("'리스트 보기' 버튼을 누르면 관심종목을 확인할 수 있어요.")
 
 # ----------------------------------------------------
-# 5-A. 홈 화면: 관심종목 리스트 (트레이딩뷰 워치리스트 스타일)
+# 5-A. 메인 화면: 주요 지수 현황
 # ----------------------------------------------------
-def render_home():
+def render_market():
     st.title("📈 나의 주식 대시보드")
-    st.caption("관심종목 리스트")
+    st.caption("주요 지수 현황")
+
+    cols = st.columns(4)
+    for col, (name, ticker) in zip(cols, INDEXES):
+        data = load_data(ticker)
+        with col, st.container(border=True):
+            st.markdown(f"**{name}**")
+            if data.empty or len(data) < 2:
+                st.write("N/A")
+                continue
+            last_close = data['Close'].iloc[-1]
+            prev_close = data['Close'].iloc[-2]
+            change = last_close - prev_close
+            change_pct = (change / prev_close) * 100
+            color = "green" if change >= 0 else "red"
+            st.metric(label=ticker, value=f"{last_close:,.2f}", delta=f"{change_pct:+.2f}%")
+            spark = build_sparkline(data['Close'].tail(30), color)
+            st.plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"idx_spark_{ticker}")
+
+    st.divider()
+    st.button("📋 관심종목 리스트 보기", on_click=show_list, width='stretch')
+
+# ----------------------------------------------------
+# 5-B. 리스트 화면: 관심종목 (정렬 가능한 워치리스트)
+# ----------------------------------------------------
+def render_list():
+    st.title("📋 관심종목 리스트")
+    st.caption("종목을 클릭하면 상세 차트로 이동합니다. 열 제목을 클릭하면 정렬됩니다.")
 
     if not st.session_state.tickers:
         st.info("사이드바에서 종목을 추가해주세요.")
         return
 
-    header = st.columns([2.8, 3, 1.6, 1.6, 2, 0.8])
-    for col, label in zip(header, ["종목", "이름", "현재가", "등락률", "최근 추이", ""]):
-        col.markdown(f"**{label}**")
-    st.divider()
+    col_widths = [c[2] for c in LIST_COLUMNS]
 
-    for name, ticker in list(st.session_state.tickers.items()):
+    # 정렬에 필요한 데이터 먼저 수집
+    rows_data = []
+    for name, ticker in st.session_state.tickers.items():
         data = load_data(ticker)
-        row = st.columns([2.8, 3, 1.6, 1.6, 2, 0.8])
-
         if data.empty or len(data) < 2:
-            row[0].button(ticker, key=f"open_{name}", on_click=open_detail, args=(name, ticker), width='stretch')
-            row[1].write(name)
-            row[2].write("N/A")
-            row[3].write("-")
-            row[5].button("🗑", key=f"del_{name}", on_click=remove_ticker, args=(name,))
+            rows_data.append({"name": name, "ticker": ticker, "price": None,
+                               "change": None, "volume": None, "closes": None, "color": None})
             continue
-
         last_close = data['Close'].iloc[-1]
         prev_close = data['Close'].iloc[-2]
-        change = last_close - prev_close
-        change_pct = (change / prev_close) * 100
-        color = "green" if change >= 0 else "red"
-        arrow = "▲" if change >= 0 else "▼"
+        change_pct = ((last_close - prev_close) / prev_close) * 100
+        rows_data.append({
+            "name": name, "ticker": ticker, "price": last_close, "change": change_pct,
+            "volume": data['Volume'].iloc[-1], "closes": data['Close'].tail(30),
+            "color": "green" if change_pct >= 0 else "red",
+        })
 
-        row[0].button(ticker, key=f"open_{name}", on_click=open_detail, args=(name, ticker), width='stretch')
-        row[1].write(name)
-        row[2].write(f"${last_close:,.2f}")
-        row[3].markdown(f":{color}[{arrow} {abs(change_pct):.2f}%]")
+    sort_by = st.session_state.sort_by
+    if sort_by:
+        valid = [r for r in rows_data if r.get(sort_by) is not None]
+        invalid = [r for r in rows_data if r.get(sort_by) is None]
+        valid.sort(key=lambda r: r[sort_by], reverse=(st.session_state.sort_dir == 'desc'))
+        rows_data = valid + invalid
 
-        spark = go.Figure(go.Scatter(y=data['Close'].tail(30).values, mode='lines',
-                                      line=dict(color=color, width=1.5)))
-        spark.update_layout(height=50, margin=dict(l=0, r=0, t=0, b=0),
-                             xaxis=dict(visible=False), yaxis=dict(visible=False),
-                             showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        row[4].plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"spark_{name}")
+    # 헤더 (정렬 버튼)
+    header = st.columns(col_widths)
+    for col, (label, key, _) in zip(header, LIST_COLUMNS):
+        if key:
+            arrow = ""
+            if st.session_state.sort_by == key:
+                arrow = " ▲" if st.session_state.sort_dir == 'asc' else " ▼"
+            col.button(f"{label}{arrow}", key=f"sort_{key}", on_click=set_sort, args=(key,), width='stretch')
+        elif label:
+            col.markdown(f"**{label}**")
+    st.divider()
 
-        row[5].button("🗑", key=f"del_{name}", on_click=remove_ticker, args=(name,))
+    for r in rows_data:
+        row = st.columns(col_widths)
+        row[0].button(r['ticker'], key=f"open_{r['name']}", on_click=open_detail,
+                      args=(r['name'], r['ticker']), width='stretch')
+        row[1].write(r['name'])
+
+        if r['price'] is None:
+            row[2].write("N/A")
+            row[3].write("-")
+            row[4].write("-")
+        else:
+            arrow = "▲" if r['color'] == "green" else "▼"
+            row[2].write(f"${r['price']:,.2f}")
+            row[3].markdown(f":{r['color']}[{arrow} {abs(r['change']):.2f}%]")
+            row[4].write(format_volume(r['volume']))
+
+        if r['closes'] is not None:
+            spark = build_sparkline(r['closes'], r['color'])
+            row[5].plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"spark_{r['name']}")
+
+        row[6].button("🗑", key=f"del_{r['name']}", on_click=remove_ticker, args=(r['name'],))
 
 # ----------------------------------------------------
-# 5-B. 상세 화면: 캔들스틱 + 보조지표
+# 5-C. 상세 화면: 캔들스틱 + 보조지표
 # ----------------------------------------------------
 def render_detail(show_sma20, show_sma60, show_sma120, show_rsi, show_macd):
     name = st.session_state.active_name
@@ -239,5 +338,7 @@ def render_detail(show_sma20, show_sma60, show_sma120, show_rsi, show_macd):
 # ----------------------------------------------------
 if st.session_state.view == 'detail' and st.session_state.active_ticker:
     render_detail(show_sma20, show_sma60, show_sma120, show_rsi, show_macd)
+elif st.session_state.view == 'list':
+    render_list()
 else:
-    render_home()
+    render_market()
