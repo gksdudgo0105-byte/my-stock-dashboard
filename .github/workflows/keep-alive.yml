@@ -1,0 +1,32 @@
+name: keep-alive
+
+# Streamlit Community Cloud 앱이 비활성으로 잠들지 않도록 주기적으로 헬스체크를 호출합니다.
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # 10분마다 실행 (GitHub 사정으로 몇 분 지연될 수 있음)
+  workflow_dispatch:          # 수동 실행 버튼
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit app (keep awake)
+        run: |
+          APP_URL="https://my-stock-dashboard-izetrwtaam3sekgahxu4nd.streamlit.app/_stcore/health"
+          JAR="$(mktemp)"
+
+          echo "Pinging: $APP_URL"
+          for i in 1 2 3; do
+            # -L(리다이렉트 따라감) + 쿠키 저장/전송으로 Streamlit 인증 핸드셰이크 완료
+            code=$(curl -sSL -c "$JAR" -b "$JAR" -o /dev/null \
+                        -w "%{http_code}" --max-time 40 \
+                        -A "keep-alive-bot" "$APP_URL" || echo "000")
+            echo "attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Reached the app (kept alive)."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Did not get 200 (app may be waking up). Not failing the job."
+          exit 0

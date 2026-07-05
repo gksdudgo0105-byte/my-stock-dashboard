@@ -537,9 +537,13 @@ def render_detail():
     if show_rsi: rows += 1
     if show_macd: rows += 1
 
-    row_heights = [0.6]
-    if show_rsi and show_macd: row_heights = [0.6, 0.2, 0.2]
-    elif show_rsi or show_macd: row_heights = [0.7, 0.3]
+    # 패널 비율: 보조지표(RSI/MACD)를 기존보다 크게
+    row_heights = [1.0]
+    if show_rsi and show_macd: row_heights = [0.5, 0.25, 0.25]
+    elif show_rsi or show_macd: row_heights = [0.62, 0.38]
+
+    # 패널 개수에 따라 전체 차트 높이를 키운다 (기존 800 → 확대)
+    chart_height = {1: 820, 2: 1050, 3: 1200}.get(rows, 820)
 
     fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.09, row_heights=row_heights)
 
@@ -602,12 +606,13 @@ def render_detail():
     date_fmt = {"일봉": "%Y-%m-%d", "주봉": "%Y-%m-%d", "월봉": "%Y-%m"}.get(timeframe, "%Y-%m-%d")
 
     fig.update_layout(
-        height=800,
+        height=chart_height,
         xaxis_rangeslider_visible=False,
         margin=dict(l=0, r=10, t=30, b=24),
         hovermode='x unified',        # 커서 x위치의 모든 값을 날짜와 함께 한 번에 표시
         hoverdistance=100,
         spikedistance=-1,             # 항상 크로스헤어(십자선) 표시
+        dragmode='pan',               # 드래그하면 손모양 커서로 차트 이동(패닝)
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
     )
     # X축: 하단 날짜 눈금을 촘촘하게 + 커서 따라다니는 세로 십자선
