@@ -155,6 +155,26 @@ DEFAULT_TICKERS = {
         "삼성전자": "005930.KS",
         "SK하이닉스": "000660.KS",
         "현대차": "005380.KS",
+        "대덕전자": "353200.KS",
+        "HD현대일렉트릭": "267260.KS",
+        "현대로템": "064350.KS",
+        "두산에너빌리티": "034020.KS",
+        "삼성전기": "009150.KS",
+        "이수페타시스": "007660.KS",
+        "원익IPS": "240810.KQ",
+        "한화에어로스페이스": "012450.KS",
+        "동진쎄미켐": "005290.KQ",
+        "제주반도체": "080220.KQ",
+        "엘앤에프": "066970.KS",
+        "LG이노텍": "011070.KS",
+        "한미반도체": "042700.KS",
+        "효성중공업": "298040.KS",
+        "HD현대중공업": "329180.KS",
+        "심텍": "222800.KQ",
+        "SK스퀘어": "402340.KS",
+        "SK텔레콤": "017670.KS",
+        "하이브": "352820.KS",
+        "JYP Ent.": "035900.KQ",
     },
 }
 
@@ -175,11 +195,18 @@ if 'sort_by' not in st.session_state:
     st.session_state.sort_by = None          # None이면 추가한 순서 그대로
 if 'sort_dir' not in st.session_state:
     st.session_state.sort_dir = 'desc'
+if 'active_market' not in st.session_state:
+    st.session_state.active_market = list(MARKETS.keys())[0]
 
 def show_market():
     st.session_state.view = 'home'
 
 def show_list():
+    st.session_state.view = 'list'
+
+def show_list_market(market):
+    # 특정 시장(국내/미국)을 바로 선택해서 리스트 화면으로 이동
+    st.session_state.active_market = market
     st.session_state.view = 'list'
 
 def open_detail(name, ticker, currency):
@@ -201,10 +228,6 @@ def set_sort(key):
 # ----------------------------------------------------
 # 4. 사이드바: 종목 추가 + 화면별 옵션
 # ----------------------------------------------------
-show_sma20 = show_sma60 = show_sma120 = show_rsi = show_macd = False
-show_bb = show_ichimoku = False
-timeframe = "일봉"
-
 with st.sidebar:
     st.header("🔍 설정 패널")
 
@@ -223,29 +246,30 @@ with st.sidebar:
 
     if st.session_state.view == 'detail':
         st.button("← 목록으로 돌아가기", on_click=show_list, width='stretch')
-        st.divider()
-        st.subheader("🕒 봉 주기")
-        timeframe = st.radio("봉 주기", list(TIMEFRAMES.keys()), horizontal=True, label_visibility="collapsed")
-        st.divider()
-        st.subheader("📊 차트 옵션")
-        show_sma20 = st.checkbox("20일 이동평균선", value=False)
-        show_sma60 = st.checkbox("60일 이동평균선", value=False)
-        show_sma120 = st.checkbox("120일 이동평균선", value=False)
-        show_bb = st.checkbox("볼린저밴드 (20, 2σ)", value=True)
-        show_ichimoku = st.checkbox("일목구름 (일목균형표)", value=True)
-        show_rsi = st.checkbox("RSI (상대강도지수)", value=True)
-        show_macd = st.checkbox("MACD", value=True)
+        st.caption("차트 위 '지표 옵션'에서 보고 싶은 지표만 켜고 끌 수 있어요.")
     elif st.session_state.view == 'list':
         st.button("← 메인 화면으로", on_click=show_market, width='stretch')
         st.caption("열 제목을 클릭하면 오름차순/내림차순 정렬이 전환됩니다.")
     else:
-        st.caption("'리스트 보기' 버튼을 누르면 관심종목을 확인할 수 있어요.")
+        st.caption("상단 버튼으로 국내/미국 관심종목을 바로 볼 수 있어요.")
 
 # ----------------------------------------------------
 # 5-A. 메인 화면: 주요 지수 현황
 # ----------------------------------------------------
 def render_market():
     st.title("📈 나의 주식 대시보드")
+
+    # 최상단: 관심종목 바로가기 (국내/미국 시장 직접 선택)
+    st.subheader("📋 관심종목 바로보기")
+    market_names = list(MARKETS.keys())
+    btn_cols = st.columns(len(market_names))
+    for col, market in zip(btn_cols, market_names):
+        count = len(st.session_state.tickers.get(market, {}))
+        icon = "🇰🇷" if market == "국내주식" else "🇺🇸"
+        col.button(f"{icon} {market} ({count})", key=f"go_{market}",
+                   on_click=show_list_market, args=(market,), width='stretch')
+
+    st.divider()
     st.caption("주요 지수 현황")
 
     # 한 줄에 3개씩 배치 (지수 6개 → 2줄)
@@ -269,9 +293,6 @@ def render_market():
                 st.plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"idx_spark_{ticker}")
                 st.button("차트 보기 →", key=f"idx_open_{ticker}", on_click=open_detail,
                           args=(name, ticker, ""), width='stretch')
-
-    st.divider()
-    st.button("📋 관심종목 리스트 보기", on_click=show_list, width='stretch')
 
 # ----------------------------------------------------
 # 5-B. 리스트 화면: 시장(국내/미국)별 관심종목 (정렬 가능)
@@ -346,19 +367,34 @@ def render_list():
     st.title("📋 관심종목 리스트")
     st.caption("종목을 클릭하면 상세 차트로 이동합니다. 열 제목을 클릭하면 정렬됩니다.")
 
-    tabs = st.tabs([f"{m} ({len(st.session_state.tickers.get(m, {}))})" for m in MARKETS])
-    for tab, (market, currency) in zip(tabs, MARKETS.items()):
-        with tab:
-            render_market_table(market, currency)
+    # 국내/미국 시장 직접 선택 (active_market 키로 상단 바로가기 버튼과 연동)
+    market = st.radio("시장 선택", list(MARKETS.keys()), horizontal=True,
+                      key="active_market", label_visibility="collapsed")
+    render_market_table(market, MARKETS[market])
 
 # ----------------------------------------------------
 # 5-C. 상세 화면: 캔들스틱 + 보조지표
 # ----------------------------------------------------
-def render_detail(opts):
+def render_detail():
     name = st.session_state.active_name
     ticker = st.session_state.active_ticker
-    timeframe = opts['timeframe']
-    st.write(f"### **{name} ({ticker})** 차트 분석  ·  {timeframe}")
+    st.write(f"### **{name} ({ticker})** 차트 분석")
+
+    # 차트 바로 위 툴바: 봉 주기 + 보고 싶은 지표만 체크박스로 선택
+    tf_col, opt_col = st.columns([1, 3])
+    with tf_col:
+        timeframe = st.radio("봉 주기", list(TIMEFRAMES.keys()), horizontal=True, key="tf_radio")
+    with opt_col:
+        st.caption("지표 옵션 (원하는 것만 체크)")
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+        show_ichimoku = c1.checkbox("일목구름", value=True, key="opt_ichimoku")
+        show_bb = c2.checkbox("볼린저밴드", value=True, key="opt_bb")
+        show_rsi = c3.checkbox("RSI", value=True, key="opt_rsi")
+        show_macd = c4.checkbox("MACD", value=True, key="opt_macd")
+        show_sma20 = c5.checkbox("SMA20", value=False, key="opt_sma20")
+        show_sma60 = c6.checkbox("SMA60", value=False, key="opt_sma60")
+        show_sma120 = c7.checkbox("SMA120", value=False, key="opt_sma120")
+    st.divider()
 
     period, interval = TIMEFRAMES[timeframe]
     df = load_data(ticker, period=period, interval=interval)
@@ -379,7 +415,6 @@ def render_detail(opts):
     df_chart = df.tail(120)
     x = df_chart.index
 
-    show_rsi, show_macd = opts['rsi'], opts['macd']
     rows = 1
     if show_rsi: rows += 1
     if show_macd: rows += 1
@@ -391,7 +426,7 @@ def render_detail(opts):
     fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=row_heights)
 
     # 일목구름: 캔들 뒤에 먼저 그림 (선행스팬1 >= 선행스팬2 → 초록 구름, 아니면 빨강 구름)
-    if opts['ichimoku']:
+    if show_ichimoku:
         span_a, span_b = df_chart['ICH_A'], df_chart['ICH_B']
         # 초록 구름
         fig.add_trace(go.Scatter(x=x, y=span_b, line=dict(width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
@@ -412,24 +447,24 @@ def render_detail(opts):
                                  low=df_chart['Low'], close=df_chart['Close'], name='Candle'), row=1, col=1)
 
     # 일목균형표 전환선/기준선/후행스팬
-    if opts['ichimoku']:
+    if show_ichimoku:
         fig.add_trace(go.Scatter(x=x, y=df_chart['ICH_TENKAN'], line=dict(color='#2962FF', width=1.2), name='전환선'), row=1, col=1)
         fig.add_trace(go.Scatter(x=x, y=df_chart['ICH_KIJUN'], line=dict(color='#B71C1C', width=1.2), name='기준선'), row=1, col=1)
         fig.add_trace(go.Scatter(x=x, y=df_chart['ICH_CHIKOU'], line=dict(color='#9E9E9E', width=1, dash='dot'), name='후행스팬'), row=1, col=1)
 
     # 볼린저밴드
-    if opts['bb']:
+    if show_bb:
         fig.add_trace(go.Scatter(x=x, y=df_chart['BB_UP'], line=dict(color='rgba(120,120,255,0.6)', width=1), name='BB 상단'), row=1, col=1)
         fig.add_trace(go.Scatter(x=x, y=df_chart['BB_LOW'], fill='tonexty', fillcolor='rgba(120,120,255,0.10)',
                                  line=dict(color='rgba(120,120,255,0.6)', width=1), name='BB 하단'), row=1, col=1)
         fig.add_trace(go.Scatter(x=x, y=df_chart['BB_MID'], line=dict(color='rgba(120,120,255,0.9)', width=1, dash='dash'), name='BB 중심'), row=1, col=1)
 
     # 이동평균선
-    if opts['sma20']:
+    if show_sma20:
         fig.add_trace(go.Scatter(x=x, y=df_chart['SMA20'], line=dict(color='orange', width=1.5), name='SMA 20'), row=1, col=1)
-    if opts['sma60']:
+    if show_sma60:
         fig.add_trace(go.Scatter(x=x, y=df_chart['SMA60'], line=dict(color='blue', width=1.5), name='SMA 60'), row=1, col=1)
-    if opts['sma120']:
+    if show_sma120:
         fig.add_trace(go.Scatter(x=x, y=df_chart['SMA120'], line=dict(color='purple', width=1.5), name='SMA 120'), row=1, col=1)
 
     current_row = 2
@@ -453,12 +488,7 @@ def render_detail(opts):
 # 6. 라우팅
 # ----------------------------------------------------
 if st.session_state.view == 'detail' and st.session_state.active_ticker:
-    render_detail({
-        'timeframe': timeframe,
-        'sma20': show_sma20, 'sma60': show_sma60, 'sma120': show_sma120,
-        'bb': show_bb, 'ichimoku': show_ichimoku,
-        'rsi': show_rsi, 'macd': show_macd,
-    })
+    render_detail()
 elif st.session_state.view == 'list':
     render_list()
 else:
