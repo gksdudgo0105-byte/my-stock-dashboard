@@ -29,63 +29,137 @@ def calc_rsi(df, period=14):
     return rsi
 
 # ----------------------------------------------------
-# 2. 기본 UI 및 종목 관리 설정
+# 2. 데이터 로드 (종목별로 캐싱, 5분마다 갱신)
 # ----------------------------------------------------
-st.set_page_config(layout="wide") # 화면을 넓게 쓰기 위한 설정
-st.title("📈 나의 첫 주식 대시보드 (Pro 버전)")
-
-if 'tickers' not in st.session_state:
-    st.session_state.tickers = {
-        "엔비디아 (NVIDIA)": "NVDA",
-        "애플 (Apple)": "AAPL",
-        "SOXX (반도체 ETF)": "SOXX"
-    }
-
-# ----------------------------------------------------
-# 3. 사이드바(Sidebar): 종목 검색 및 지표 옵션 선택
-# ----------------------------------------------------
-with st.sidebar:
-    st.header("🔍 설정 패널")
-    
-    # 종목 추가
-    new_ticker = st.text_input("새로운 종목 티커 추가 (예: TSLA)")
-    if st.button("목록에 추가") and new_ticker:
-        new_ticker = new_ticker.upper()
-        st.session_state.tickers[f"새 종목 ({new_ticker})"] = new_ticker
-        st.success(f"{new_ticker} 추가 완료!")
-    
-    st.divider()
-    
-    # 종목 선택
-    selected_name = st.selectbox("차트를 볼 종목을 선택하세요", list(st.session_state.tickers.keys()))
-    selected_ticker = st.session_state.tickers[selected_name]
-    
-    st.divider()
-    
-    # 차트 옵션 선택 (체크박스)
-    st.subheader("📊 차트 옵션")
-    show_sma20 = st.checkbox("20일 이동평균선", value=True)
-    show_sma60 = st.checkbox("60일 이동평균선", value=False)
-    show_sma120 = st.checkbox("120일 이동평균선", value=False)
-    show_rsi = st.checkbox("RSI (상대강도지수)", value=True)
-    show_macd = st.checkbox("MACD", value=True)
-
-# ----------------------------------------------------
-# 4. 데이터 로드 및 지표 계산
-# ----------------------------------------------------
-st.write(f"### **{selected_name} ({selected_ticker})** 차트 분석")
-
-@st.cache_data
+@st.cache_data(ttl=300)
 def load_data(ticker):
     # yfinance의 최신 버전 호환성 문제(MultiIndex)를 피하기 위해 Ticker.history()를 사용합니다.
     stock = yf.Ticker(ticker)
     data = stock.history(period="1y")
     return data
 
-df = load_data(selected_ticker)
+# ----------------------------------------------------
+# 3. 기본 UI 및 상태(세션) 초기화
+# ----------------------------------------------------
+st.set_page_config(layout="wide", page_title="나의 주식 대시보드")
 
-if not df.empty:
-    # 지표 데이터 추가 계산
+if 'tickers' not in st.session_state:
+    st.session_state.tickers = {
+        "엔비디아 (NVIDIA)": "NVDA",
+        "애플 (Apple)": "AAPL",
+        "SOXX (반도체 ETF)": "SOXX",
+    }
+if 'view' not in st.session_state:
+    st.session_state.view = 'home'          # 'home' or 'detail'
+if 'active_name' not in st.session_state:
+    st.session_state.active_name = None
+if 'active_ticker' not in st.session_state:
+    st.session_state.active_ticker = None
+
+def open_detail(name, ticker):
+    st.session_state.view = 'detail'
+    st.session_state.active_name = name
+    st.session_state.active_ticker = ticker
+
+def back_to_home():
+    st.session_state.view = 'home'
+
+def remove_ticker(name):
+    st.session_state.tickers.pop(name, None)
+    if st.session_state.active_name == name:
+        st.session_state.view = 'home'
+
+# ----------------------------------------------------
+# 4. 사이드바: 종목 추가 + (상세 화면일 때) 차트 옵션
+# ----------------------------------------------------
+show_sma20 = show_sma60 = show_sma120 = show_rsi = show_macd = False
+
+with st.sidebar:
+    st.header("🔍 설정 패널")
+
+    new_ticker = st.text_input("새로운 종목 티커 추가 (예: TSLA)")
+    if st.button("목록에 추가") and new_ticker:
+        new_ticker = new_ticker.upper()
+        st.session_state.tickers[f"새 종목 ({new_ticker})"] = new_ticker
+        st.success(f"{new_ticker} 추가 완료!")
+
+    st.divider()
+
+    if st.session_state.view == 'detail':
+        st.button("← 종목 리스트로 돌아가기", on_click=back_to_home, width='stretch')
+        st.divider()
+        st.subheader("📊 차트 옵션")
+        show_sma20 = st.checkbox("20일 이동평균선", value=True)
+        show_sma60 = st.checkbox("60일 이동평균선", value=False)
+        show_sma120 = st.checkbox("120일 이동평균선", value=False)
+        show_rsi = st.checkbox("RSI (상대강도지수)", value=True)
+        show_macd = st.checkbox("MACD", value=True)
+    else:
+        st.caption("아래 관심종목 리스트에서 종목을 클릭하면 상세 차트로 이동합니다.")
+
+# ----------------------------------------------------
+# 5-A. 홈 화면: 관심종목 리스트 (트레이딩뷰 워치리스트 스타일)
+# ----------------------------------------------------
+def render_home():
+    st.title("📈 나의 주식 대시보드")
+    st.caption("관심종목 리스트")
+
+    if not st.session_state.tickers:
+        st.info("사이드바에서 종목을 추가해주세요.")
+        return
+
+    header = st.columns([2.8, 3, 1.6, 1.6, 2, 0.8])
+    for col, label in zip(header, ["종목", "이름", "현재가", "등락률", "최근 추이", ""]):
+        col.markdown(f"**{label}**")
+    st.divider()
+
+    for name, ticker in list(st.session_state.tickers.items()):
+        data = load_data(ticker)
+        row = st.columns([2.8, 3, 1.6, 1.6, 2, 0.8])
+
+        if data.empty or len(data) < 2:
+            row[0].button(ticker, key=f"open_{name}", on_click=open_detail, args=(name, ticker), width='stretch')
+            row[1].write(name)
+            row[2].write("N/A")
+            row[3].write("-")
+            row[5].button("🗑", key=f"del_{name}", on_click=remove_ticker, args=(name,))
+            continue
+
+        last_close = data['Close'].iloc[-1]
+        prev_close = data['Close'].iloc[-2]
+        change = last_close - prev_close
+        change_pct = (change / prev_close) * 100
+        color = "green" if change >= 0 else "red"
+        arrow = "▲" if change >= 0 else "▼"
+
+        row[0].button(ticker, key=f"open_{name}", on_click=open_detail, args=(name, ticker), width='stretch')
+        row[1].write(name)
+        row[2].write(f"${last_close:,.2f}")
+        row[3].markdown(f":{color}[{arrow} {abs(change_pct):.2f}%]")
+
+        spark = go.Figure(go.Scatter(y=data['Close'].tail(30).values, mode='lines',
+                                      line=dict(color=color, width=1.5)))
+        spark.update_layout(height=50, margin=dict(l=0, r=0, t=0, b=0),
+                             xaxis=dict(visible=False), yaxis=dict(visible=False),
+                             showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+        row[4].plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"spark_{name}")
+
+        row[5].button("🗑", key=f"del_{name}", on_click=remove_ticker, args=(name,))
+
+# ----------------------------------------------------
+# 5-B. 상세 화면: 캔들스틱 + 보조지표
+# ----------------------------------------------------
+def render_detail(show_sma20, show_sma60, show_sma120, show_rsi, show_macd):
+    name = st.session_state.active_name
+    ticker = st.session_state.active_ticker
+    st.write(f"### **{name} ({ticker})** 차트 분석")
+
+    df = load_data(ticker)
+
+    if df.empty:
+        st.error("데이터를 불러오지 못했습니다. 올바른 티커인지 확인해 주세요.")
+        return
+
     df['SMA20'] = calc_sma(df, 20)
     df['SMA60'] = calc_sma(df, 60)
     df['SMA120'] = calc_sma(df, 120)
@@ -93,28 +167,22 @@ if not df.empty:
     df['RSI'] = calc_rsi(df)
 
     # 최근 6개월 데이터만 잘라서 차트에 표시 (너무 길면 캔들이 안 보임)
-    df_chart = df.tail(120) 
+    df_chart = df.tail(120)
 
-    # ----------------------------------------------------
-    # 5. Plotly를 이용한 인터랙티브 차트 그리기
-    # ----------------------------------------------------
     # 보조지표 선택 여부에 따라 차트의 층(Row) 개수 계산
     rows = 1
     if show_rsi: rows += 1
     if show_macd: rows += 1
-    
-    # 패널(Subplots) 비율 설정
+
     row_heights = [0.6]
     if show_rsi and show_macd: row_heights = [0.6, 0.2, 0.2]
     elif show_rsi or show_macd: row_heights = [0.7, 0.3]
 
     fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=row_heights)
 
-    # 메인 차트: 캔들스틱 추가
-    fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], 
+    fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
                                  low=df_chart['Low'], close=df_chart['Close'], name='Candle'), row=1, col=1)
 
-    # 메인 차트: 이동평균선 추가
     if show_sma20:
         fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA20'], line=dict(color='orange', width=1.5), name='SMA 20'), row=1, col=1)
     if show_sma60:
@@ -122,28 +190,26 @@ if not df.empty:
     if show_sma120:
         fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA120'], line=dict(color='purple', width=1.5), name='SMA 120'), row=1, col=1)
 
-    # 보조지표 차트 그리기 시작할 위치(층)
     current_row = 2
-
-    # RSI 차트 추가
     if show_rsi:
         fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RSI'], line=dict(color='purple', width=1.5), name='RSI'), row=current_row, col=1)
-        # RSI 30, 70 기준선 긋기
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=current_row, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=current_row, col=1)
         current_row += 1
 
-    # MACD 차트 추가
     if show_macd:
-        # MACD 막대그래프(히스토그램) 색상 지정 (양수는 초록, 음수는 빨강)
         colors = ['green' if val >= 0 else 'red' for val in df_chart['MACD_Hist']]
         fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['MACD_Hist'], marker_color=colors, name='MACD Hist'), row=current_row, col=1)
         fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD'], line=dict(color='blue', width=1.5), name='MACD Line'), row=current_row, col=1)
         fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MACD_Signal'], line=dict(color='orange', width=1.5), name='Signal Line'), row=current_row, col=1)
 
-    # 차트 전체 레이아웃 다듬기
     fig.update_layout(height=800, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
+# ----------------------------------------------------
+# 6. 라우팅
+# ----------------------------------------------------
+if st.session_state.view == 'detail' and st.session_state.active_ticker:
+    render_detail(show_sma20, show_sma60, show_sma120, show_rsi, show_macd)
 else:
-    st.error("데이터를 불러오지 못했습니다. 올바른 티커인지 확인해 주세요.")
+    render_home()
