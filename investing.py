@@ -411,8 +411,9 @@ def render_detail():
     df['BB_MID'], df['BB_UP'], df['BB_LOW'] = calc_bollinger(df)
     df['ICH_TENKAN'], df['ICH_KIJUN'], df['ICH_A'], df['ICH_B'], df['ICH_CHIKOU'] = calc_ichimoku(df)
 
-    # 최근 120개 봉만 잘라서 표시 (너무 길면 캔들이 안 보임)
-    df_chart = df.tail(120)
+    # 봉 주기별로 기본적으로 더 많은 날짜를 표시 (차트는 확대/축소 가능)
+    display_n = {"일봉": 250, "주봉": 260, "월봉": 240}.get(timeframe, 200)
+    df_chart = df.tail(display_n)
     x = df_chart.index
 
     rows = 1
@@ -480,8 +481,35 @@ def render_detail():
         fig.add_trace(go.Scatter(x=x, y=df_chart['MACD'], line=dict(color='blue', width=1.5), name='MACD Line'), row=current_row, col=1)
         fig.add_trace(go.Scatter(x=x, y=df_chart['MACD_Signal'], line=dict(color='orange', width=1.5), name='Signal Line'), row=current_row, col=1)
 
-    fig.update_layout(height=800, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=30, b=0),
-                      legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0))
+    # 봉 주기별 날짜 표시 형식
+    date_fmt = {"일봉": "%Y-%m-%d", "주봉": "%Y-%m-%d", "월봉": "%Y-%m"}.get(timeframe, "%Y-%m-%d")
+
+    fig.update_layout(
+        height=800,
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=0, r=10, t=30, b=24),
+        hovermode='x unified',        # 커서 x위치의 모든 값을 날짜와 함께 한 번에 표시
+        hoverdistance=100,
+        spikedistance=-1,             # 항상 크로스헤어(십자선) 표시
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+    )
+    # X축: 하단 날짜 눈금을 촘촘하게 + 커서 따라다니는 세로 십자선
+    fig.update_xaxes(
+        showspikes=True, spikemode='across', spikesnap='cursor',
+        spikecolor='rgba(160,160,160,0.9)', spikethickness=1, spikedash='dot',
+        showgrid=True, gridcolor='rgba(150,150,150,0.12)',
+        nticks=15, tickformat=date_fmt, hoverformat=date_fmt,
+    )
+    # Y축: 커서 따라다니는 가로 십자선 + 가격 표시
+    fig.update_yaxes(
+        showspikes=True, spikemode='across', spikesnap='cursor',
+        spikecolor='rgba(160,160,160,0.9)', spikethickness=1, spikedash='dot',
+        showgrid=True, gridcolor='rgba(150,150,150,0.12)',
+    )
+    # 일봉은 주말 공백을 제거해 캔들이 끊기지 않게 (트레이딩뷰처럼)
+    if interval == "1d":
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+
     st.plotly_chart(fig, width='stretch')
 
 # ----------------------------------------------------
