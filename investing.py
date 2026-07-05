@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -86,6 +87,54 @@ def format_price(price, currency):
         return f"₩{price:,.0f}"      # 원화는 소수점 없이 표시
     return f"${price:,.2f}"
 
+def fng_kor(value):
+    # 0~100 값을 한국어 라벨과 색상으로 변환
+    if value < 25:   return "극단적 공포", "#e53935"
+    if value < 45:   return "공포", "#fb8c00"
+    if value < 55:   return "중립", "#bdbdbd"
+    if value < 75:   return "탐욕", "#66bb6a"
+    return "극단적 탐욕", "#26a69a"
+
+@st.cache_data(ttl=600)
+def load_fear_greed():
+    # 1) CNN 미국 증시 공포·탐욕 지수 우선 시도
+    try:
+        r = requests.get("https://production.data-feed.cnn.io/index/fearandgreed/graphdata",
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        fg = r.json().get("fear_and_greed", {})
+        if fg.get("score") is not None:
+            return {"value": round(float(fg["score"])), "source": "CNN · 미국 증시"}
+    except Exception:
+        pass
+    # 2) 실패 시 alternative.me 가상자산 공포·탐욕 지수로 폴백
+    try:
+        r = requests.get("https://api.alternative.me/fng/", timeout=10)
+        d = r.json()["data"][0]
+        return {"value": int(d["value"]), "source": "alternative.me · 가상자산"}
+    except Exception:
+        return None
+
+def build_fng_gauge(value, color):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=value,
+        number={"font": {"size": 40}},
+        gauge={
+            "axis": {"range": [0, 100], "tickvals": [0, 25, 45, 55, 75, 100]},
+            "bar": {"color": color, "thickness": 0.25},
+            "steps": [
+                {"range": [0, 25],  "color": "rgba(229,57,53,0.35)"},
+                {"range": [25, 45], "color": "rgba(251,140,0,0.35)"},
+                {"range": [45, 55], "color": "rgba(189,189,189,0.35)"},
+                {"range": [55, 75], "color": "rgba(102,187,106,0.35)"},
+                {"range": [75, 100],"color": "rgba(38,166,154,0.35)"},
+            ],
+        },
+    ))
+    fig.update_layout(height=220, margin=dict(l=30, r=30, t=10, b=0),
+                      paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
 # 메인 화면에 표시할 주요 지수
 INDEXES = [
     ("나스닥", "^IXIC"),
@@ -104,13 +153,14 @@ MARKETS = {
 
 # 관심종목 리스트의 정렬 가능한 컬럼 (표시 라벨, 정렬 키, 컬럼 너비)
 LIST_COLUMNS = [
-    ("종목", "ticker", 2.0),
-    ("이름", "name", 2.6),
-    ("현재가", "price", 1.4),
-    ("등락률", "change", 1.4),
-    ("거래량", "volume", 1.6),
-    ("최근 추이", None, 1.8),
-    ("", None, 0.7),
+    ("종목", "ticker", 1.8),
+    ("이름", "name", 2.4),
+    ("현재가", "price", 1.3),
+    ("등락률", "change", 1.3),
+    ("거래량", "volume", 1.4),
+    ("RSI", "rsi", 1.1),
+    ("최근 추이", None, 1.7),
+    ("", None, 0.6),
 ]
 
 # ----------------------------------------------------
@@ -271,6 +321,24 @@ def render_market():
                    on_click=show_list_market, args=(market,), width='stretch')
 
     st.divider()
+
+    # 공포·탐욕 지수 (Fear & Greed Index)
+    st.subheader("😨 공포·탐욕 지수 (Fear & Greed)")
+    fng = load_fear_greed()
+    if fng:
+        klabel, kcolor = fng_kor(fng["value"])
+        g_col, t_col = st.columns([1.2, 2])
+        with g_col:
+            st.plotly_chart(build_fng_gauge(fng["value"], kcolor),
+                            width='stretch', config={'displayModeBar': False}, key="fng_gauge")
+        with t_col:
+            st.markdown(f"### :{'red' if fng['value'] < 45 else ('green' if fng['value'] >= 55 else 'gray')}[{klabel}]")
+            st.markdown(f"현재 지수 **{fng['value']} / 100**")
+            st.caption(f"출처: {fng['source']}  ·  0(극단적 공포) ~ 100(극단적 탐욕)")
+    else:
+        st.info("공포·탐욕 지수를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")
+
+    st.divider()
     st.caption("주요 지수 현황")
 
     # 한 줄에 3개씩 배치 (지수 6개 → 2줄)
@@ -312,14 +380,17 @@ def render_market_table(market, currency):
         data = load_data(ticker)
         if data.empty or len(data) < 2:
             rows_data.append({"name": name, "ticker": ticker, "price": None,
-                               "change": None, "volume": None, "closes": None, "color": None})
+                               "change": None, "volume": None, "rsi": None, "closes": None, "color": None})
             continue
         last_close = data['Close'].iloc[-1]
         prev_close = data['Close'].iloc[-2]
         change_pct = ((last_close - prev_close) / prev_close) * 100
+        rsi_val = calc_rsi(data).iloc[-1]
         rows_data.append({
             "name": name, "ticker": ticker, "price": last_close, "change": change_pct,
-            "volume": data['Volume'].iloc[-1], "closes": data['Close'].tail(30),
+            "volume": data['Volume'].iloc[-1],
+            "rsi": (None if pd.isna(rsi_val) else float(rsi_val)),
+            "closes": data['Close'].tail(30),
             "color": "green" if change_pct >= 0 else "red",
         })
 
@@ -352,17 +423,24 @@ def render_market_table(market, currency):
             row[2].write("N/A")
             row[3].write("-")
             row[4].write("-")
+            row[5].write("-")
         else:
             arrow = "▲" if r['color'] == "green" else "▼"
             row[2].write(format_price(r['price'], currency))
             row[3].markdown(f":{r['color']}[{arrow} {abs(r['change']):.2f}%]")
             row[4].write(format_volume(r['volume']))
+            if r['rsi'] is None:
+                row[5].write("-")
+            else:
+                # RSI 70이상 과매수(빨강), 30이하 과매도(파랑), 그 외 기본
+                rsi_color = "red" if r['rsi'] >= 70 else ("blue" if r['rsi'] <= 30 else "gray")
+                row[5].markdown(f":{rsi_color}[{r['rsi']:.0f}]")
 
         if r['closes'] is not None:
             spark = build_sparkline(r['closes'], r['color'])
-            row[5].plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"spark_{market}_{r['name']}")
+            row[6].plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"spark_{market}_{r['name']}")
 
-        row[6].button("🗑", key=f"del_{market}_{r['name']}", on_click=remove_ticker, args=(market, r['name']))
+        row[7].button("🗑", key=f"del_{market}_{r['name']}", on_click=remove_ticker, args=(market, r['name']))
 
 def render_list():
     st.title("📋 관심종목 리스트")
