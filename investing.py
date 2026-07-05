@@ -49,9 +49,10 @@ def calc_ichimoku(df):
 # 2. 데이터 로드 및 표시용 헬퍼
 # ----------------------------------------------------
 # 봉 주기(일/주/월) 별 조회 기간·간격 설정
+# 스크롤로 과거 데이터를 더 볼 수 있도록 넉넉한 기간을 로드한다.
 TIMEFRAMES = {
-    "일봉": ("1y", "1d"),
-    "주봉": ("5y", "1wk"),
+    "일봉": ("3y", "1d"),
+    "주봉": ("max", "1wk"),
     "월봉": ("max", "1mo"),
 }
 
@@ -411,9 +412,10 @@ def render_detail():
     df['BB_MID'], df['BB_UP'], df['BB_LOW'] = calc_bollinger(df)
     df['ICH_TENKAN'], df['ICH_KIJUN'], df['ICH_A'], df['ICH_B'], df['ICH_CHIKOU'] = calc_ichimoku(df)
 
-    # 봉 주기별로 기본적으로 더 많은 날짜를 표시 (차트는 확대/축소 가능)
-    display_n = {"일봉": 250, "주봉": 260, "월봉": 240}.get(timeframe, 200)
-    df_chart = df.tail(display_n)
+    # 넉넉히 그려두고(스크롤 시 과거 데이터가 나타나도록) 처음엔 최근 구간만 보이게 한다.
+    plot_cap = {"일봉": 750, "주봉": 500, "월봉": 360}.get(timeframe, 500)
+    visible_n = 120                      # 처음 화면에 보이는 봉 개수
+    df_chart = df.tail(plot_cap)
     x = df_chart.index
 
     rows = 1
@@ -424,7 +426,7 @@ def render_detail():
     if show_rsi and show_macd: row_heights = [0.6, 0.2, 0.2]
     elif show_rsi or show_macd: row_heights = [0.7, 0.3]
 
-    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=row_heights)
+    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.09, row_heights=row_heights)
 
     # 일목구름: 캔들 뒤에 먼저 그림 (선행스팬1 >= 선행스팬2 → 초록 구름, 아니면 빨강 구름)
     if show_ichimoku:
@@ -510,7 +512,21 @@ def render_detail():
     if interval == "1d":
         fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
 
-    st.plotly_chart(fig, width='stretch')
+    # 날짜 눈금을 캔들차트(맨 위) 바로 아래에 표시하고, 아래 보조지표엔 숨김
+    fig.update_xaxes(showticklabels=True, row=1, col=1)
+    for r in range(2, rows + 1):
+        fig.update_xaxes(showticklabels=False, row=r, col=1)
+
+    # 처음엔 최근 visible_n개 봉만 보이게 설정 → 스크롤/드래그로 과거·현재 데이터 탐색
+    if len(df_chart) > visible_n:
+        fig.update_xaxes(range=[df_chart.index[-visible_n], df_chart.index[-1]])
+        vis = df_chart.tail(visible_n)
+        y_lo, y_hi = float(vis['Low'].min()), float(vis['High'].max())
+        pad = (y_hi - y_lo) * 0.08 or 1
+        fig.update_yaxes(range=[y_lo - pad, y_hi + pad], row=1, col=1)
+
+    st.caption("💡 차트 위에서 마우스 휠로 확대/축소, 드래그로 이동하며 과거 데이터를 볼 수 있어요. 더블클릭하면 원래대로 돌아갑니다.")
+    st.plotly_chart(fig, width='stretch', config={'scrollZoom': True})
 
 # ----------------------------------------------------
 # 6. 라우팅
