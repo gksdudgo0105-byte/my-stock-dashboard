@@ -174,6 +174,32 @@ LIST_COLUMNS = [
     ("", None, 0.6),
 ]
 
+# 관심종목 리스트를 '표(그리드)' 형태로 보이게 하는 CSS (개별 박스가 아닌 연속된 표 선 + 중앙정렬)
+TABLE_CSS = """
+<style>
+.st-key-watchlist [data-testid="stHorizontalBlock"]{
+    gap: 0 !important;
+    border-bottom: 1px solid rgba(150,150,150,0.30);
+    align-items: stretch;
+}
+.st-key-watchlist [data-testid="stHorizontalBlock"]:first-of-type{
+    border-top: 1px solid rgba(150,150,150,0.30);
+    background: rgba(150,150,150,0.10);
+}
+.st-key-watchlist [data-testid="stColumn"]{
+    border-right: 1px solid rgba(150,150,150,0.30);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    padding: 6px 4px; min-height: 54px;
+}
+.st-key-watchlist [data-testid="stColumn"]:first-of-type{
+    border-left: 1px solid rgba(150,150,150,0.30);
+}
+.st-key-watchlist [data-testid="stColumn"] .stButton{ width: 100%; }
+.st-key-watchlist [data-testid="stColumn"] p{ margin: 0; text-align: center; }
+</style>
+"""
+
 # ----------------------------------------------------
 # 3. 기본 UI 및 상태(세션) 초기화
 # ----------------------------------------------------
@@ -412,43 +438,46 @@ def render_market_table(market, currency):
         valid.sort(key=lambda r: r[sort_by], reverse=(st.session_state.sort_dir == 'desc'))
         rows_data = valid + invalid
 
-    # 헤더 (정렬 버튼) — 시장별로 key가 겹치지 않도록 market을 접두어로 사용
-    header = st.columns(col_widths, vertical_alignment="center", border=True)
-    for col, (label, key, _) in zip(header, LIST_COLUMNS):
-        if key:
-            arrow = ""
-            if st.session_state.sort_by == key:
-                arrow = " ▲" if st.session_state.sort_dir == 'asc' else " ▼"
-            col.button(f"{label}{arrow}", key=f"sort_{market}_{key}", on_click=set_sort, args=(key,), width='stretch')
-        elif label:
-            center_cell(col, label, bold=True)
+    # 표(그리드) 형태 CSS 적용 후, 하나의 컨테이너 안에 헤더 + 행을 그려 연속된 표선을 만든다.
+    st.markdown(TABLE_CSS, unsafe_allow_html=True)
+    with st.container(key="watchlist"):
+        # 헤더 (정렬 버튼) — 시장별로 key가 겹치지 않도록 market을 접두어로 사용
+        header = st.columns(col_widths, vertical_alignment="center")
+        for col, (label, key, _) in zip(header, LIST_COLUMNS):
+            if key:
+                arrow = ""
+                if st.session_state.sort_by == key:
+                    arrow = " ▲" if st.session_state.sort_dir == 'asc' else " ▼"
+                col.button(f"{label}{arrow}", key=f"sort_{market}_{key}", on_click=set_sort, args=(key,), width='stretch')
+            elif label:
+                center_cell(col, label, bold=True)
 
-    for r in rows_data:
-        row = st.columns(col_widths, vertical_alignment="center", border=True)
-        row[0].button(r['ticker'], key=f"open_{market}_{r['name']}", on_click=open_detail,
-                      args=(r['name'], r['ticker'], currency), width='stretch')
-        center_cell(row[1], r['name'])
+        for r in rows_data:
+            row = st.columns(col_widths, vertical_alignment="center")
+            row[0].button(r['ticker'], key=f"open_{market}_{r['name']}", on_click=open_detail,
+                          args=(r['name'], r['ticker'], currency), width='stretch')
+            center_cell(row[1], r['name'])
 
-        if r['price'] is None:
-            for i in (2, 3, 4, 5):
-                center_cell(row[i], "-")
-        else:
-            arrow = "▲" if r['color'] == "green" else "▼"
-            center_cell(row[2], format_price(r['price'], currency))
-            center_cell(row[3], f"{arrow} {abs(r['change']):.2f}%", color=r['color'])
-            center_cell(row[4], format_volume(r['volume']))
-            if r['rsi'] is None:
-                center_cell(row[5], "-")
+            if r['price'] is None:
+                for i in (2, 3, 4, 5):
+                    center_cell(row[i], "-")
             else:
-                # RSI 70이상 과매수(빨강), 30이하 과매도(파랑), 그 외 기본
-                rsi_color = "red" if r['rsi'] >= 70 else ("blue" if r['rsi'] <= 30 else "gray")
-                center_cell(row[5], f"{r['rsi']:.0f}", color=rsi_color, bold=True)
+                arrow = "▲" if r['color'] == "green" else "▼"
+                center_cell(row[2], format_price(r['price'], currency))
+                center_cell(row[3], f"{arrow} {abs(r['change']):.2f}%", color=r['color'])
+                center_cell(row[4], format_volume(r['volume']))
+                if r['rsi'] is None:
+                    center_cell(row[5], "-")
+                else:
+                    # RSI 70이상 과매수(빨강), 30이하 과매도(파랑), 그 외 기본
+                    rsi_color = "red" if r['rsi'] >= 70 else ("blue" if r['rsi'] <= 30 else "gray")
+                    center_cell(row[5], f"{r['rsi']:.0f}", color=rsi_color, bold=True)
 
-        if r['closes'] is not None:
-            spark = build_sparkline(r['closes'], r['color'])
-            row[6].plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"spark_{market}_{r['name']}")
+            if r['closes'] is not None:
+                spark = build_sparkline(r['closes'], r['color'])
+                row[6].plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"spark_{market}_{r['name']}")
 
-        row[7].button("🗑", key=f"del_{market}_{r['name']}", on_click=remove_ticker, args=(market, r['name']))
+            row[7].button("🗑", key=f"del_{market}_{r['name']}", on_click=remove_ticker, args=(market, r['name']))
 
 def render_list():
     st.title("📋 관심종목 리스트")
