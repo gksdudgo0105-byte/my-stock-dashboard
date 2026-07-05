@@ -115,7 +115,7 @@ LIST_COLUMNS = [
 # ----------------------------------------------------
 # 3. 기본 UI 및 상태(세션) 초기화
 # ----------------------------------------------------
-st.set_page_config(layout="wide", page_title="나의 주식 대시보드")
+st.set_page_config(layout="wide", page_title="StockPulse")
 
 DEFAULT_TICKERS = {
     "미국주식": {
