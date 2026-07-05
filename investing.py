@@ -87,6 +87,17 @@ def format_price(price, currency):
         return f"₩{price:,.0f}"      # 원화는 소수점 없이 표시
     return f"${price:,.2f}"
 
+# 리스트 셀 색상 (가운데 정렬 HTML에서 사용)
+COLOR_HEX = {"green": "#26a69a", "red": "#ef5350", "blue": "#2196f3", "gray": "#9e9e9e"}
+
+def center_cell(col, text, color=None, bold=False):
+    style = "text-align:center;"
+    if color:
+        style += f"color:{COLOR_HEX.get(color, color)};"
+    if bold:
+        style += "font-weight:600;"
+    col.markdown(f"<div style='{style}'>{text}</div>", unsafe_allow_html=True)
+
 def fng_kor(value):
     # 0~100 값을 한국어 라벨과 색상으로 변환
     if value < 25:   return "극단적 공포", "#e53935"
@@ -402,7 +413,7 @@ def render_market_table(market, currency):
         rows_data = valid + invalid
 
     # 헤더 (정렬 버튼) — 시장별로 key가 겹치지 않도록 market을 접두어로 사용
-    header = st.columns(col_widths)
+    header = st.columns(col_widths, vertical_alignment="center", border=True)
     for col, (label, key, _) in zip(header, LIST_COLUMNS):
         if key:
             arrow = ""
@@ -410,31 +421,28 @@ def render_market_table(market, currency):
                 arrow = " ▲" if st.session_state.sort_dir == 'asc' else " ▼"
             col.button(f"{label}{arrow}", key=f"sort_{market}_{key}", on_click=set_sort, args=(key,), width='stretch')
         elif label:
-            col.markdown(f"**{label}**")
-    st.divider()
+            center_cell(col, label, bold=True)
 
     for r in rows_data:
-        row = st.columns(col_widths)
+        row = st.columns(col_widths, vertical_alignment="center", border=True)
         row[0].button(r['ticker'], key=f"open_{market}_{r['name']}", on_click=open_detail,
                       args=(r['name'], r['ticker'], currency), width='stretch')
-        row[1].write(r['name'])
+        center_cell(row[1], r['name'])
 
         if r['price'] is None:
-            row[2].write("N/A")
-            row[3].write("-")
-            row[4].write("-")
-            row[5].write("-")
+            for i in (2, 3, 4, 5):
+                center_cell(row[i], "-")
         else:
             arrow = "▲" if r['color'] == "green" else "▼"
-            row[2].write(format_price(r['price'], currency))
-            row[3].markdown(f":{r['color']}[{arrow} {abs(r['change']):.2f}%]")
-            row[4].write(format_volume(r['volume']))
+            center_cell(row[2], format_price(r['price'], currency))
+            center_cell(row[3], f"{arrow} {abs(r['change']):.2f}%", color=r['color'])
+            center_cell(row[4], format_volume(r['volume']))
             if r['rsi'] is None:
-                row[5].write("-")
+                center_cell(row[5], "-")
             else:
                 # RSI 70이상 과매수(빨강), 30이하 과매도(파랑), 그 외 기본
                 rsi_color = "red" if r['rsi'] >= 70 else ("blue" if r['rsi'] <= 30 else "gray")
-                row[5].markdown(f":{rsi_color}[{r['rsi']:.0f}]")
+                center_cell(row[5], f"{r['rsi']:.0f}", color=rsi_color, bold=True)
 
         if r['closes'] is not None:
             spark = build_sparkline(r['closes'], r['color'])
