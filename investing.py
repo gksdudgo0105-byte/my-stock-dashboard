@@ -54,13 +54,28 @@ def format_volume(v):
     if v >= 1_000: return f"{v/1_000:.2f}K"
     return f"{v:.0f}"
 
+def format_price(price, currency):
+    if price is None or pd.isna(price):
+        return "N/A"
+    if currency == "₩":
+        return f"₩{price:,.0f}"      # 원화는 소수점 없이 표시
+    return f"${price:,.2f}"
+
 # 메인 화면에 표시할 주요 지수
 INDEXES = [
     ("나스닥", "^IXIC"),
     ("S&P 500", "^GSPC"),
     ("다우존스", "^DJI"),
     ("비트코인", "BTC-USD"),
+    ("달러환율 (USD/KRW)", "KRW=X"),
+    ("달러인덱스 (DXY)", "DX-Y.NYB"),
 ]
+
+# 시장(마켓) 구분과 통화 기호
+MARKETS = {
+    "미국주식": "$",
+    "국내주식": "₩",
+}
 
 # 관심종목 리스트의 정렬 가능한 컬럼 (표시 라벨, 정렬 키, 컬럼 너비)
 LIST_COLUMNS = [
@@ -78,8 +93,8 @@ LIST_COLUMNS = [
 # ----------------------------------------------------
 st.set_page_config(layout="wide", page_title="나의 주식 대시보드")
 
-if 'tickers' not in st.session_state:
-    st.session_state.tickers = {
+DEFAULT_TICKERS = {
+    "미국주식": {
         "엔비디아 (NVIDIA)": "NVDA",
         "애플 (Apple)": "AAPL",
         "SOXX (반도체 ETF)": "SOXX",
@@ -111,13 +126,27 @@ if 'tickers' not in st.session_state:
         "엑슨모빌 (ExxonMobil)": "XOM",
         "스타벅스 (Starbucks)": "SBUX",
         "록히드마틴 (Lockheed Martin)": "LMT",
-    }
+    },
+    "국내주식": {
+        "삼성전자": "005930.KS",
+        "SK하이닉스": "000660.KS",
+        "현대차": "005380.KS",
+    },
+}
+
+# 세션에 없거나 옛 형식(평면 dict)이면 새 형식(시장별 중첩 dict)으로 초기화
+if 'tickers' not in st.session_state or not all(
+        isinstance(v, dict) for v in st.session_state.get('tickers', {}).values()):
+    st.session_state.tickers = {m: dict(DEFAULT_TICKERS.get(m, {})) for m in MARKETS}
+
 if 'view' not in st.session_state:
     st.session_state.view = 'home'          # 'home'(주요 지수) / 'list'(관심종목) / 'detail'(차트)
 if 'active_name' not in st.session_state:
     st.session_state.active_name = None
 if 'active_ticker' not in st.session_state:
     st.session_state.active_ticker = None
+if 'active_currency' not in st.session_state:
+    st.session_state.active_currency = "$"
 if 'sort_by' not in st.session_state:
     st.session_state.sort_by = None          # None이면 추가한 순서 그대로
 if 'sort_dir' not in st.session_state:
@@ -129,13 +158,14 @@ def show_market():
 def show_list():
     st.session_state.view = 'list'
 
-def open_detail(name, ticker):
+def open_detail(name, ticker, currency):
     st.session_state.view = 'detail'
     st.session_state.active_name = name
     st.session_state.active_ticker = ticker
+    st.session_state.active_currency = currency
 
-def remove_ticker(name):
-    st.session_state.tickers.pop(name, None)
+def remove_ticker(market, name):
+    st.session_state.tickers.get(market, {}).pop(name, None)
 
 def set_sort(key):
     if st.session_state.sort_by == key:
@@ -152,11 +182,16 @@ show_sma20 = show_sma60 = show_sma120 = show_rsi = show_macd = False
 with st.sidebar:
     st.header("🔍 설정 패널")
 
+    add_market = st.selectbox("시장 구분", list(MARKETS.keys()))
+    if add_market == "국내주식":
+        st.caption("국내주식은 뒤에 .KS(코스피)/.KQ(코스닥)를 붙여주세요. 예: 005930.KS")
     new_ticker = st.text_input("새로운 종목 티커 추가 (예: TSLA)")
+    new_label = st.text_input("표시할 이름 (선택)")
     if st.button("목록에 추가") and new_ticker:
         new_ticker = new_ticker.upper()
-        st.session_state.tickers[f"새 종목 ({new_ticker})"] = new_ticker
-        st.success(f"{new_ticker} 추가 완료!")
+        label = new_label.strip() or f"새 종목 ({new_ticker})"
+        st.session_state.tickers.setdefault(add_market, {})[label] = new_ticker
+        st.success(f"[{add_market}] {new_ticker} 추가 완료!")
 
     st.divider()
 
@@ -182,34 +217,35 @@ def render_market():
     st.title("📈 나의 주식 대시보드")
     st.caption("주요 지수 현황")
 
-    cols = st.columns(4)
-    for col, (name, ticker) in zip(cols, INDEXES):
-        data = load_data(ticker)
-        with col, st.container(border=True):
-            st.markdown(f"**{name}**")
-            if data.empty or len(data) < 2:
-                st.write("N/A")
-                continue
-            last_close = data['Close'].iloc[-1]
-            prev_close = data['Close'].iloc[-2]
-            change = last_close - prev_close
-            change_pct = (change / prev_close) * 100
-            color = "green" if change >= 0 else "red"
-            st.metric(label=ticker, value=f"{last_close:,.2f}", delta=f"{change_pct:+.2f}%")
-            spark = build_sparkline(data['Close'].tail(30), color)
-            st.plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"idx_spark_{ticker}")
+    # 한 줄에 3개씩 배치 (지수 6개 → 2줄)
+    per_row = 3
+    for start in range(0, len(INDEXES), per_row):
+        cols = st.columns(per_row)
+        for col, (name, ticker) in zip(cols, INDEXES[start:start + per_row]):
+            data = load_data(ticker)
+            with col, st.container(border=True):
+                st.markdown(f"**{name}**")
+                if data.empty or len(data) < 2:
+                    st.write("N/A")
+                    continue
+                last_close = data['Close'].iloc[-1]
+                prev_close = data['Close'].iloc[-2]
+                change = last_close - prev_close
+                change_pct = (change / prev_close) * 100
+                color = "green" if change >= 0 else "red"
+                st.metric(label=ticker, value=f"{last_close:,.2f}", delta=f"{change_pct:+.2f}%")
+                spark = build_sparkline(data['Close'].tail(30), color)
+                st.plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"idx_spark_{ticker}")
 
     st.divider()
     st.button("📋 관심종목 리스트 보기", on_click=show_list, width='stretch')
 
 # ----------------------------------------------------
-# 5-B. 리스트 화면: 관심종목 (정렬 가능한 워치리스트)
+# 5-B. 리스트 화면: 시장(국내/미국)별 관심종목 (정렬 가능)
 # ----------------------------------------------------
-def render_list():
-    st.title("📋 관심종목 리스트")
-    st.caption("종목을 클릭하면 상세 차트로 이동합니다. 열 제목을 클릭하면 정렬됩니다.")
-
-    if not st.session_state.tickers:
+def render_market_table(market, currency):
+    watch = st.session_state.tickers.get(market, {})
+    if not watch:
         st.info("사이드바에서 종목을 추가해주세요.")
         return
 
@@ -217,7 +253,7 @@ def render_list():
 
     # 정렬에 필요한 데이터 먼저 수집
     rows_data = []
-    for name, ticker in st.session_state.tickers.items():
+    for name, ticker in watch.items():
         data = load_data(ticker)
         if data.empty or len(data) < 2:
             rows_data.append({"name": name, "ticker": ticker, "price": None,
@@ -239,22 +275,22 @@ def render_list():
         valid.sort(key=lambda r: r[sort_by], reverse=(st.session_state.sort_dir == 'desc'))
         rows_data = valid + invalid
 
-    # 헤더 (정렬 버튼)
+    # 헤더 (정렬 버튼) — 시장별로 key가 겹치지 않도록 market을 접두어로 사용
     header = st.columns(col_widths)
     for col, (label, key, _) in zip(header, LIST_COLUMNS):
         if key:
             arrow = ""
             if st.session_state.sort_by == key:
                 arrow = " ▲" if st.session_state.sort_dir == 'asc' else " ▼"
-            col.button(f"{label}{arrow}", key=f"sort_{key}", on_click=set_sort, args=(key,), width='stretch')
+            col.button(f"{label}{arrow}", key=f"sort_{market}_{key}", on_click=set_sort, args=(key,), width='stretch')
         elif label:
             col.markdown(f"**{label}**")
     st.divider()
 
     for r in rows_data:
         row = st.columns(col_widths)
-        row[0].button(r['ticker'], key=f"open_{r['name']}", on_click=open_detail,
-                      args=(r['name'], r['ticker']), width='stretch')
+        row[0].button(r['ticker'], key=f"open_{market}_{r['name']}", on_click=open_detail,
+                      args=(r['name'], r['ticker'], currency), width='stretch')
         row[1].write(r['name'])
 
         if r['price'] is None:
@@ -263,15 +299,24 @@ def render_list():
             row[4].write("-")
         else:
             arrow = "▲" if r['color'] == "green" else "▼"
-            row[2].write(f"${r['price']:,.2f}")
+            row[2].write(format_price(r['price'], currency))
             row[3].markdown(f":{r['color']}[{arrow} {abs(r['change']):.2f}%]")
             row[4].write(format_volume(r['volume']))
 
         if r['closes'] is not None:
             spark = build_sparkline(r['closes'], r['color'])
-            row[5].plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"spark_{r['name']}")
+            row[5].plotly_chart(spark, width='stretch', config={'displayModeBar': False}, key=f"spark_{market}_{r['name']}")
 
-        row[6].button("🗑", key=f"del_{r['name']}", on_click=remove_ticker, args=(r['name'],))
+        row[6].button("🗑", key=f"del_{market}_{r['name']}", on_click=remove_ticker, args=(market, r['name']))
+
+def render_list():
+    st.title("📋 관심종목 리스트")
+    st.caption("종목을 클릭하면 상세 차트로 이동합니다. 열 제목을 클릭하면 정렬됩니다.")
+
+    tabs = st.tabs([f"{m} ({len(st.session_state.tickers.get(m, {}))})" for m in MARKETS])
+    for tab, (market, currency) in zip(tabs, MARKETS.items()):
+        with tab:
+            render_market_table(market, currency)
 
 # ----------------------------------------------------
 # 5-C. 상세 화면: 캔들스틱 + 보조지표
