@@ -146,6 +146,40 @@ def build_fng_gauge(value, color):
                       paper_bgcolor="rgba(0,0,0,0)")
     return fig
 
+@st.cache_data(ttl=60)
+def load_top_volume(market, n=10):
+    # 시장 전체에서 거래량 상위 종목을 실시간 조회 (Yahoo 스크리너, 1분 캐시)
+    try:
+        if market == "국내주식":
+            q = yf.EquityQuery("and", [
+                yf.EquityQuery("eq", ["region", "kr"]),
+                yf.EquityQuery("gt", ["dayvolume", 10000]),
+            ])
+            r = yf.screen(q, sortField="dayvolume", sortAsc=False, count=60)
+        else:  # 미국주식(해외)
+            r = yf.screen("most_actives", count=40)
+        quotes = r.get("quotes", []) if isinstance(r, dict) else []
+    except Exception:
+        return []
+
+    rows = []
+    for q in quotes:
+        vol = q.get("regularMarketVolume")
+        price = q.get("regularMarketPrice")
+        if not vol or price is None:
+            continue
+        cur = "₩" if (q.get("currency") == "KRW" or str(q.get("symbol", "")).endswith((".KS", ".KQ"))) else "$"
+        rows.append({
+            "ticker": q.get("symbol"),
+            "name": q.get("shortName") or q.get("longName") or q.get("symbol"),
+            "price": price,
+            "change": q.get("regularMarketChangePercent"),
+            "volume": vol,
+            "currency": cur,
+        })
+    rows.sort(key=lambda x: x["volume"], reverse=True)
+    return rows[:n]
+
 # 메인 화면에 표시할 주요 지수
 INDEXES = [
     ("나스닥", "^IXIC"),
@@ -285,6 +319,8 @@ if 'sort_dir' not in st.session_state:
     st.session_state.sort_dir = 'desc'
 if 'active_market' not in st.session_state:
     st.session_state.active_market = list(MARKETS.keys())[0]
+if 'top_market' not in st.session_state:
+    st.session_state.top_market = list(MARKETS.keys())[0]
 
 def show_market():
     st.session_state.view = 'home'
@@ -296,6 +332,11 @@ def show_list_market(market):
     # 특정 시장(국내/미국)을 바로 선택해서 리스트 화면으로 이동
     st.session_state.active_market = market
     st.session_state.view = 'list'
+
+def show_top_market(market):
+    # 거래량 상위 TOP10 화면으로 이동 (국내/해외 선택)
+    st.session_state.top_market = market
+    st.session_state.view = 'top'
 
 def open_detail(name, ticker, currency):
     st.session_state.view = 'detail'
@@ -338,8 +379,11 @@ with st.sidebar:
     elif st.session_state.view == 'list':
         st.button("← 메인 화면으로", on_click=show_market, width='stretch')
         st.caption("열 제목을 클릭하면 오름차순/내림차순 정렬이 전환됩니다.")
+    elif st.session_state.view == 'top':
+        st.button("← 메인 화면으로", on_click=show_market, width='stretch')
+        st.caption("거래량 상위 10개 종목이 1분마다 자동 갱신됩니다.")
     else:
-        st.caption("상단 버튼으로 국내/미국 관심종목을 바로 볼 수 있어요.")
+        st.caption("상단 버튼으로 국내/미국 관심종목·거래량 TOP10을 바로 볼 수 있어요.")
 
 # ----------------------------------------------------
 # 5-A. 메인 화면: 주요 지수 현황
@@ -356,6 +400,15 @@ def render_market():
         icon = "🇰🇷" if market == "국내주식" else "🇺🇸"
         col.button(f"{icon} {market} ({count})", key=f"go_{market}",
                    on_click=show_list_market, args=(market,), width='stretch')
+
+    # 실시간 거래량 TOP10 바로가기 (국내/해외)
+    st.subheader("🔥 실시간 거래량 TOP10")
+    top_cols = st.columns(len(market_names))
+    for col, market in zip(top_cols, market_names):
+        icon = "🇰🇷" if market == "국내주식" else "🇺🇸"
+        label = f"{icon} {'국내' if market == '국내주식' else '해외'} 거래량 TOP10"
+        col.button(label, key=f"gotop_{market}",
+                   on_click=show_top_market, args=(market,), width='stretch')
 
     st.divider()
 
@@ -487,6 +540,52 @@ def render_list():
     market = st.radio("시장 선택", list(MARKETS.keys()), horizontal=True,
                       key="active_market", label_visibility="collapsed")
     render_market_table(market, MARKETS[market])
+
+# ----------------------------------------------------
+# 5-B2. 실시간 거래량 TOP10 화면 (국내/해외)
+# ----------------------------------------------------
+TOP_COLUMNS = [("순위", 0.7), ("종목", 1.8), ("이름", 3.0), ("현재가", 1.5), ("등락률", 1.5), ("거래량", 1.8)]
+
+def render_top():
+    st.title("🔥 실시간 거래량 TOP10")
+
+    head = st.columns([4, 1])
+    market = head[0].radio("시장 선택", list(MARKETS.keys()), horizontal=True,
+                           key="top_market", label_visibility="collapsed")
+    if head[1].button("🔄 새로고침", width='stretch'):
+        load_top_volume.clear()
+        st.rerun()
+
+    label = "국내(코스피·코스닥)" if market == "국내주식" else "해외(미국)"
+    st.caption(f"{label} 거래량 상위 10개 · 1분마다 자동 갱신 · 종목을 클릭하면 상세 차트로 이동")
+
+    rows = load_top_volume(market)
+    if not rows:
+        st.warning("실시간 거래량 데이터를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.")
+        return
+
+    col_widths = [c[1] for c in TOP_COLUMNS]
+    st.markdown(TABLE_CSS, unsafe_allow_html=True)
+    with st.container(key="watchlist"):
+        header = st.columns(col_widths, vertical_alignment="center")
+        for col, (label_h, _) in zip(header, TOP_COLUMNS):
+            center_cell(col, label_h, bold=True)
+
+        for i, r in enumerate(rows, start=1):
+            row = st.columns(col_widths, vertical_alignment="center")
+            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else str(i)
+            center_cell(row[0], medal, bold=True)
+            row[1].button(r["ticker"], key=f"top_open_{market}_{r['ticker']}", on_click=open_detail,
+                          args=(r["name"], r["ticker"], r["currency"]), width='stretch')
+            center_cell(row[2], r["name"])
+            center_cell(row[3], format_price(r["price"], r["currency"]))
+            if r["change"] is None:
+                center_cell(row[4], "-")
+            else:
+                color = "green" if r["change"] >= 0 else "red"
+                arrow = "▲" if r["change"] >= 0 else "▼"
+                center_cell(row[4], f"{arrow} {abs(r['change']):.2f}%", color=color)
+            center_cell(row[5], format_volume(r["volume"]))
 
 # ----------------------------------------------------
 # 5-C. 상세 화면: 캔들스틱 + 보조지표
@@ -655,5 +754,7 @@ if st.session_state.view == 'detail' and st.session_state.active_ticker:
     render_detail()
 elif st.session_state.view == 'list':
     render_list()
+elif st.session_state.view == 'top':
+    render_top()
 else:
     render_market()
