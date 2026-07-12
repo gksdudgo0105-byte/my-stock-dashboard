@@ -106,12 +106,19 @@ def fng_kor(value):
     if value < 75:   return "탐욕", "#66bb6a"
     return "극단적 탐욕", "#26a69a"
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def load_fear_greed():
     # 1) CNN 미국 증시 공포·탐욕 지수 우선 시도
+    # 구 도메인(data-feed.cnn.io)은 폐기되어 dataviz.cnn.io로 이전되었고,
+    # Referer 헤더가 없으면 봇으로 간주되어 차단(418)되므로 함께 전달한다.
     try:
-        r = requests.get("https://production.data-feed.cnn.io/index/fearandgreed/graphdata",
-                         headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        r = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+                         headers={
+                             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                           "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                             "Referer": "https://www.cnn.com/markets/fear-and-greed",
+                             "Accept": "application/json, text/plain, */*",
+                         }, timeout=10)
         fg = r.json().get("fear_and_greed", {})
         if fg.get("score") is not None:
             return {"value": round(float(fg["score"])), "source": "CNN · 미국 증시"}
@@ -146,6 +153,19 @@ def build_fng_gauge(value, color):
                       paper_bgcolor="rgba(0,0,0,0)")
     return fig
 
+def load_korean_names(codes):
+    # 네이버 금융 실시간 시세 API에서 한국어 종목명을 배치 조회 (예: 005930 -> 삼성전자)
+    if not codes:
+        return {}
+    try:
+        r = requests.get(
+            f"https://polling.finance.naver.com/api/realtime/domestic/stock/{','.join(codes)}",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        datas = r.json().get("datas", [])
+        return {d["itemCode"]: d["stockName"] for d in datas if d.get("stockName")}
+    except Exception:
+        return {}
+
 @st.cache_data(ttl=60)
 def load_top_volume(market, n=10):
     # 시장 전체에서 거래량 상위 종목을 실시간 조회 (Yahoo 스크리너, 1분 캐시)
@@ -178,7 +198,18 @@ def load_top_volume(market, n=10):
             "currency": cur,
         })
     rows.sort(key=lambda x: x["volume"], reverse=True)
-    return rows[:n]
+    rows = rows[:n]
+
+    if market == "국내주식" and rows:
+        # Yahoo가 주는 영문명 대신 네이버 실시간 API의 한국어 종목명으로 교체
+        codes = [row["ticker"].split(".")[0] for row in rows]
+        kor_names = load_korean_names(codes)
+        for row in rows:
+            code = row["ticker"].split(".")[0]
+            if code in kor_names:
+                row["name"] = kor_names[code]
+
+    return rows
 
 # 메인 화면에 표시할 주요 지수
 INDEXES = [
